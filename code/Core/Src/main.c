@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "math.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,15 +41,23 @@
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
-TIM_HandleTypeDef htim5;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 uint32_t QEIReadRaw; //read degree motor
-float MotorSetDeg = 0; // for setting degree
+float SetDegree = 0; // for setting degree
 float Duty = 0;
-
+float Degree = 0;
+float error = 0;
+float error_integral = 0;
+float error_differential = 0;
+float error_previous = 0;
+float deg_output = 0;
+float Kp = 2.4;
+float Ki = 0;
+float Kd = 0.15;
+int direction = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,9 +66,8 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
-static void MX_TIM5_Init(void);
 /* USER CODE BEGIN PFP */
-
+void PIDControl();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -99,11 +106,11 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
-  MX_TIM5_Init();
   /* USER CODE BEGIN 2 */
 HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_1|TIM_CHANNEL_2);
 HAL_TIM_Base_Start(&htim3);
 HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -115,12 +122,24 @@ HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
     /* USER CODE BEGIN 3 */
 	  static uint32_t timestamp = 0;
 	  if(HAL_GetTick()>timestamp){
-		  timestamp = HAL_GetTick() + 500;
+		  timestamp = HAL_GetTick() + 50;
 		  QEIReadRaw = __HAL_TIM_GET_COUNTER(&htim2);
-		  QEIReadRaw = (QEIReadRaw * 360)/3072;
-		__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,Duty*10); // compare counter period and input เพื่อเปลี่ยน duty cycle (1MHz/CounterPeriod
+		  Degree = (QEIReadRaw * 360)/3072.0;
+
 
 	  }
+	  PIDControl();
+		if (direction == 0){
+	  __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,Duty*10); // compare counter period and input เพื่อเปลี่ยน duty cycle (1MHz/CounterPeriod
+	  __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,0); // compare counter period and input เพื่อเปลี่ยน duty cycle (1MHz/CounterPeriod
+
+		}
+		if (direction == 1){
+	  __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,Duty*10); // compare counter period and input เพื่อเปลี่ยน duty cycle (1MHz/CounterPeriod
+	  __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,0); // compare counter period and input เพื่อเปลี่ยน duty cycle (1MHz/CounterPeriod
+
+		}
+
   }
   /* USER CODE END 3 */
 }
@@ -272,55 +291,14 @@ static void MX_TIM3_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
-
-}
-
-/**
-  * @brief TIM5 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM5_Init(void)
-{
-
-  /* USER CODE BEGIN TIM5_Init 0 */
-
-  /* USER CODE END TIM5_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM5_Init 1 */
-
-  /* USER CODE END TIM5_Init 1 */
-  htim5.Instance = TIM5;
-  htim5.Init.Prescaler = 83;
-  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim5.Init.Period = 4294967295;
-  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim5) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim5, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM5_Init 2 */
-
-  /* USER CODE END TIM5_Init 2 */
 
 }
 
@@ -391,6 +369,34 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void PIDControl(){
+
+	// For Kp
+	error = SetDegree - Degree ; // kp*e for finding error
+	// For ki
+	error_integral = error_integral + (error * 50.0);
+	// For kd
+	error_differential = (error - error_previous) / 50.0;
+	// PID Equation
+	deg_output = (error * Kp) + (error_integral * Ki) + (error_differential * Kd);
+
+	Duty = fabs(deg_output);
+	error_previous = error;
+	// check Duty > 100 or < 0
+	if (Duty > 100){
+		Duty = 100;
+	}
+//	if (Duty < 0){
+//		Duty = fabs(deg_output);
+//	}
+	if (deg_output < 0){
+		direction = 1;
+	}
+	if (deg_output > 0){
+		direction = 0;
+	}
+
+}
 
 /* USER CODE END 4 */
 
